@@ -1,0 +1,34 @@
+# Self-hosted house stack. The gateway runs as a container bound to localhost;
+# Caddy (on the host or its own unit) terminates TLS and proxies to it. No cloud.
+
+services:
+  gateway:
+    build: .
+    image: razzloo-gateway:latest
+    restart: unless-stopped
+    # Bind to loopback only — Caddy is the sole public entrypoint.
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      PORT: "8787"
+      HOST: "0.0.0.0"
+      PUBLIC_BASE_URL: "https://gw.razzoozle.xyz"
+      # TTL / sweep (§12) — override here if needed.
+      SESSION_TTL_MS: "1800000"
+      OFFLINE_GRACE_MS: "90000"
+      # Update channel config / kill-switch (§14) — flip without a code change.
+      STABLE_LATEST_VERSION: "0.4.3"
+      STABLE_MIN_VERSION: "0.0.0"
+      STABLE_KILL_SWITCH: "0"
+      STABLE_NOTES: "Fixes UPnP candidate ordering."
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Liveness: the update gate is a pure-function endpoint with no side effects.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/v1/update/stable?appVersion=0.0.0').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

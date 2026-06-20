@@ -1,0 +1,38 @@
+# Caddy reverse proxy for the Razzoozle rendezvous gateway.
+# Caddy terminates TLS (automatic ACME), sets security headers, and proxies to
+# the Node/Fastify service on 127.0.0.1:8787. The gateway never serves binaries.
+#
+# Copy to /etc/caddy/Caddyfile (or import it) and `systemctl reload caddy`.
+
+gw.razzoozle.xyz {
+	encode zstd gzip
+
+	# Security headers (threat-model §11). HSTS is added by Caddy on https sites.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# Tight CSP for the only HTML we serve (the /j/:code join page). The
+		# bootstrap script and stylesheet are same-origin static files
+		# (/j/app.js, /j/app.css) and the QR is a same-origin <img>; no external
+		# origins, no eval, NO inline script. The app sets the SAME CSP on the
+		# /j response itself (so it holds even if Caddy is bypassed) — keep these
+		# in sync. style-src keeps 'unsafe-inline' only for the small static
+		# stylesheet's pragmatics; script-src is strictly 'self'.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+		-Server
+	}
+
+	# Front-line connection limit (the app also rate-limits per route + locks out
+	# join brute-force). Caddy's built-in is intentionally coarse.
+	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output file /var/log/caddy/gw.razzoozle.xyz.log
+		# Do NOT log request bodies; Caddy access logs are URL-only by default.
+	}
+}

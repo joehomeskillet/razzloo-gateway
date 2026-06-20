@@ -1,0 +1,29 @@
+{
+  "name": "razzloo-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Razzoozle rendezvous + update-decision gateway (gw.razzoozle.xyz). Discovery only.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --import tsx --watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^10.2.2",
+    "fastify": "^5.2.1",
+    "qrcode": "^1.5.4",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/qrcode": "^1.5.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
