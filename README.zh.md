@@ -45,6 +45,26 @@
 
 被攻破的网关可以扰乱**发现**（拒绝或误导），但它无法读取或篡改任何一条游戏答案，因为游戏数据从不流经它。
 
+```
+工作原理
+
+(A) 同一 Wi-Fi —— 简单情形，零配置
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             测验数据从不离开你的局域网
+
+(B) 手机在另一网络 —— 通过网关进行可选（opt-in）发现
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    网关只把 CODE -> 主机地址做映射。它不保存任何游戏数据，
+    也从不中继游戏 —— 一旦手机拿到地址，它便退到一旁。
+```
+
 ---
 
 ## 🔒 安全态势

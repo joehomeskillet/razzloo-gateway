@@ -45,6 +45,26 @@ Toute la conception repose sur une règle stricte : **découverte uniquement**.
 
 Une passerelle compromise peut perturber la **découverte** (refuser ou induire en erreur), mais elle ne peut lire ni altérer une seule réponse de jeu, car le jeu ne transite jamais par elle.
 
+```
+COMMENT ÇA MARCHE
+
+(A) Même Wi-Fi — le cas simple, aucune configuration
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             le quiz ne quitte jamais votre LAN
+
+(B) Téléphone sur un autre réseau — découverte optionnelle (opt-in) via la passerelle
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    La passerelle se contente d'associer CODE -> adresse de l'hôte. Elle ne conserve aucune donnée de jeu et
+    ne relaie jamais le jeu — une fois que le téléphone a l'adresse, elle s'efface.
+```
+
 ---
 
 ## 🔒 Posture de sécurité

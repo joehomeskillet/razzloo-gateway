@@ -45,6 +45,26 @@ The whole design is built around one hard rule: **discovery only**.
 
 A compromised gateway can disrupt **discovery** (deny or mislead), but it cannot read or alter a single game answer, because gameplay never flows through it.
 
+```
+HOW IT WORKS
+
+(A) Same Wi-Fi — the simple case, zero setup
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             the quiz never leaves your LAN
+
+(B) Phone on another network — opt-in discovery via the gateway
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    The gateway only maps CODE -> host address. It keeps no game data and
+    never relays gameplay — once the phone has the address, it steps aside.
+```
+
 ---
 
 ## 🔒 Security posture

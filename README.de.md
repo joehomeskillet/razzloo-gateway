@@ -45,6 +45,26 @@ Das gesamte Design folgt einer harten Regel: **nur Discovery**.
 
 Ein kompromittiertes Gateway kann die **Discovery** stören (verweigern oder in die Irre führen), aber es kann keine einzige Spielantwort lesen oder verändern, weil Spielgeschehen niemals durch es fließt.
 
+```
+SO FUNKTIONIERT ES
+
+(A) Gleiches WLAN — der einfache Fall, keine Einrichtung
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             das Quiz verlässt niemals dein LAN
+
+(B) Handy in einem anderen Netzwerk — opt-in Erkennung über das Gateway
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    Das Gateway ordnet nur CODE -> Host-Adresse zu. Es speichert keine Spieldaten und
+    leitet niemals Spielgeschehen weiter — sobald das Handy die Adresse hat, tritt es beiseite.
+```
+
 ---
 
 ## 🔒 Sicherheits-Haltung

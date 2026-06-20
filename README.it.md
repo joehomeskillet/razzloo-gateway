@@ -45,6 +45,26 @@ L'intero design ruota attorno a una regola rigida: **solo discovery**.
 
 Un gateway compromesso può disturbare la **discovery** (negare o fuorviare), ma non può leggere né alterare una singola risposta di gioco, perché il gioco non passa mai attraverso di esso.
 
+```
+COME FUNZIONA
+
+(A) Stessa Wi-Fi — il caso semplice, nessuna configurazione
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             il quiz non lascia mai la tua LAN
+
+(B) Telefono su un'altra rete — scoperta facoltativa (opt-in) tramite il gateway
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    Il gateway si limita ad associare CODE -> indirizzo dell'host. Non conserva dati di gioco e
+    non inoltra mai il gioco — una volta che il telefono ha l'indirizzo, si fa da parte.
+```
+
 ---
 
 ## 🔒 Postura di sicurezza
