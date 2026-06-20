@@ -361,7 +361,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // (isLocked / recordMiss / recordHit) and serves a GENERIC placeholder SVG
   // with status 200 for unknown/expired codes — so it is not a brute-force
   // bypass and not an existence oracle (unknown vs known are both 200 + SVG).
-  app.get<{ Params: { joinCode: string } }>(
+  app.get<{ Params: { joinCode: string }; Querystring: { i?: string } }>(
     "/j/:joinCode/qr.svg",
     { config: rl(60, "1 minute") },
     async (req, reply) => {
@@ -381,8 +381,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         return reply.send(await qrPlaceholderSvg());
       }
       lockout.recordHit(ip);
-      const sorted = [...rec.candidates].sort((a, b) => a.priority - b.priority);
-      return reply.send(await qrSvg(sorted[0]!.url));
+      // Phase 4: ?i=<n> selects the n-th candidate in the SAME player-facing
+      // order the page renders (joinResolveView). Out-of-range / missing => 0.
+      const sorted = candidateOrder(rec.candidates);
+      const i = Number.parseInt(req.query.i ?? "", 10);
+      const idx = Number.isInteger(i) && i >= 0 && i < sorted.length ? i : 0;
+      return reply.send(await qrSvg(sorted[idx]!.url));
     },
   );
 
@@ -403,9 +407,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   return app;
 }
 
+// Player-facing candidate order (Phase 4, §8): lan first, then public-ipv6,
+// public-ipv4, manual; upnp last. Numeric `priority` is the tiebreaker WITHIN a
+// kind. Single source of truth — both joinResolveView and the per-candidate
+// qr.svg route use this, so a QR at ?i=<n> encodes the same candidate the page
+// renders at position n.
+const KIND_RANK: Record<string, number> = {
+  lan: 0,
+  "public-ipv6": 1,
+  "public-ipv4": 2,
+  manual: 3,
+  upnp: 4,
+};
+
+function candidateOrder(cands: StoredCandidate[]): StoredCandidate[] {
+  return [...cands].sort((a, b) => {
+    const ra = KIND_RANK[a.kind] ?? 9;
+    const rb = KIND_RANK[b.kind] ?? 9;
+    if (ra !== rb) return ra - rb;
+    return a.priority - b.priority;
+  });
+}
+
 // JoinResolveResponse view (§7): omits hostId / observedFrom / hostToken.
 function joinResolveView(rec: SessionRecord) {
-  const sorted = [...rec.candidates].sort((a, b) => a.priority - b.priority);
+  const sorted = candidateOrder(rec.candidates);
   const candidates = sorted.map((c) => {
     const out: {
       id: string;
