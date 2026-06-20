@@ -50,14 +50,9 @@ export function renderJoinPage(rawCode: string): string {
   <h1>Join game <span class="code">${safeCode}</span></h1>
   <div id="status" class="muted">Looking up host&hellip;</div>
   <div id="action" hidden>
-    <p>Tap to open the host on your network:</p>
-    <a id="goLink" class="btn" href="#" rel="noopener noreferrer">Open game</a>
-    <div id="qr"></div>
-    <p class="muted">Or scan the QR with another phone on the same Wi-Fi.</p>
-    <details>
-      <summary>Other addresses</summary>
-      <ul id="others"></ul>
-    </details>
+    <p>Tap an address to open the host. If the first link does not open the game,
+       try the next one - this page cannot test the links for you.</p>
+    <ul id="cands" class="cands"></ul>
   </div>
   <div id="fail" class="warn" hidden></div>
   <p class="warn">You must be on the <strong>same Wi-Fi</strong> as the host for a
@@ -79,28 +74,101 @@ h1 { font-size: 1.25rem; }
        background: #2563eb; color: #fff; text-decoration: none;
        border: 0; border-radius: .5rem; font-weight: 600; cursor: pointer; }
 .muted { color: #666; font-size: .9rem; }
-ul { padding-left: 1.2rem; }
-#qr img { width: 180px; height: 180px; image-rendering: pixelated; }
+.cands { list-style: none; padding: 0; margin: 1rem 0; }
+.cand { border: 1px solid #d4d4d8; border-radius: .6rem; padding: .9rem 1rem;
+        margin: .75rem 0; }
+.cand-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.cand-kind { font-weight: 700; text-transform: uppercase; font-size: .75rem;
+             letter-spacing: .05em; color: #3f3f46;
+             /* ponytail: kind text rendered as-is via textContent; CSS only */ }
+.cand-head .btn { margin: 0; }
+.cand-url { word-break: break-all; margin-top: .4rem; }
+.cand-note { margin-top: .4rem; }
+.cand-qr { width: 140px; height: 140px; image-rendering: pixelated;
+           margin-top: .6rem; display: block; }
 .warn { background: #fff7ed; border: 1px solid #fdba74; padding: .75rem 1rem;
         border-radius: .5rem; font-size: .9rem; margin: .75rem 0; }
 `;
 
 // Static bootstrap script (served same-origin, CSP script-src 'self'). Reads
 // the sanitized join code from body[data-code]; never receives it via inline
-// interpolation. Candidate URLs are injected via .textContent / element.href
-// (DOM API, no HTML parsing) so a hostile candidate URL cannot inject markup.
+// interpolation. Candidate kind/url are injected via .textContent / setAttribute
+// (DOM API, no innerHTML for candidate data) so a hostile candidate value cannot
+// inject markup. Phase 4: render EVERY candidate priority-ordered, each a
+// top-level-navigation <a href> button + a small same-origin per-candidate QR.
 export const JOIN_PAGE_JS = `(function () {
   var CODE = document.body.getAttribute('data-code') || '';
   var statusEl = document.getElementById('status');
   var actionEl = document.getElementById('action');
   var failEl = document.getElementById('fail');
-  var goLink = document.getElementById('goLink');
-  var othersEl = document.getElementById('others');
-  var qrEl = document.getElementById('qr');
+  var candsEl = document.getElementById('cands');
+
+  // Defense-in-depth (F4): only http/https candidate urls become a clickable
+  // href. A non-http(s) scheme (javascript:, data:, …) is NEVER set as href.
+  // Parse with the URL API; reject anything unparseable or non-http(s).
+  function safeHttpUrl(raw) {
+    try {
+      var u = new URL(raw);
+      if (u.protocol === 'http:' || u.protocol === 'https:') return raw;
+    } catch (e) {}
+    return null;
+  }
 
   function showFail(msg) {
     actionEl.hidden = true; failEl.hidden = false; failEl.textContent = msg;
     statusEl.hidden = true;
+  }
+
+  function renderCandidate(c, index) {
+    var url = safeHttpUrl(c.url);
+    var li = document.createElement('li');
+    li.className = 'cand';
+
+    var head = document.createElement('div');
+    head.className = 'cand-head';
+    var kindEl = document.createElement('span');
+    kindEl.className = 'cand-kind';
+    kindEl.textContent = c.kind; // textContent => kind is inert text, not markup
+    head.appendChild(kindEl);
+
+    if (url) {
+      var a = document.createElement('a');
+      a.className = 'btn';
+      // setAttribute keeps a hostile url out of any HTML-parsing sink; the URL
+      // API already vetted the scheme. Top-level nav to the host's own origin.
+      a.setAttribute('href', url);
+      a.setAttribute('rel', 'noopener noreferrer');
+      a.textContent = 'Open game'; // url shown separately below, also as text
+      head.appendChild(a);
+    } else {
+      var bad = document.createElement('span');
+      bad.className = 'muted';
+      bad.textContent = 'unsupported address'; // non-http(s): not clickable
+      head.appendChild(bad);
+    }
+    li.appendChild(head);
+
+    var urlEl = document.createElement('div');
+    urlEl.className = 'cand-url muted';
+    urlEl.textContent = c.url; // raw url as inert text (escaped by the DOM)
+    li.appendChild(urlEl);
+
+    if (c.kind === 'lan') {
+      var note = document.createElement('div');
+      note.className = 'cand-note muted';
+      note.textContent = 'Make sure your phone is on the same Wi-Fi as the host.';
+      li.appendChild(note);
+    }
+
+    if (url) {
+      // Per-candidate QR, rendered same-origin by the gateway from THIS url.
+      var img = document.createElement('img');
+      img.className = 'cand-qr';
+      img.alt = 'QR code for ' + c.kind + ' address';
+      img.src = '/j/' + encodeURIComponent(CODE) + '/qr.svg?i=' + index;
+      li.appendChild(img);
+    }
+    return li;
   }
 
   async function resolve() {
@@ -124,31 +192,20 @@ export const JOIN_PAGE_JS = `(function () {
     var data = await res.json();
     var cands = data.candidates || [];
     if (!cands.length) {
+      // Zero candidates: keep the existing graceful state (no buttons, a note).
       showFail(data.message || 'Host has no reachable addresses right now.');
       return;
     }
-    // Candidates are priority-sorted by the gateway. Offer the first for a
-    // user-gesture TOP-LEVEL navigation; list the rest. No auto-redirect.
-    var primary = cands[0];
-    goLink.href = primary.url;
-    othersEl.innerHTML = '';
-    cands.slice(1).forEach(function (c) {
-      var li = document.createElement('li');
-      var a = document.createElement('a');
-      a.href = c.url; a.textContent = c.kind + ': ' + c.url;
-      a.rel = 'noopener noreferrer';
-      li.appendChild(a); othersEl.appendChild(li);
-    });
-    // QR rendered server-side, same-origin, from the gateway.
-    qrEl.innerHTML = '';
-    var img = document.createElement('img');
-    img.alt = 'QR code to the host';
-    img.src = '/j/' + encodeURIComponent(CODE) + '/qr.svg';
-    qrEl.appendChild(img);
+    // The gateway returns candidates already in player-facing order (lan first,
+    // then public-ipv6/ipv4, then manual, upnp last; numeric priority within a
+    // kind). The per-candidate QR at /j/<code>/qr.svg?i=<index> indexes into
+    // this SAME order, so each QR encodes its own candidate's url.
+    candsEl.textContent = ''; // clear; never innerHTML with candidate data
+    cands.forEach(function (c, i) { candsEl.appendChild(renderCandidate(c, i)); });
     statusEl.hidden = true; actionEl.hidden = false;
     if (data.status === 'offline') {
       statusEl.hidden = false;
-      statusEl.textContent = 'Host may be offline - the address might be stale.';
+      statusEl.textContent = 'Host may be offline - the addresses might be stale.';
     }
   }
   document.getElementById('retry').addEventListener('click', resolve);
