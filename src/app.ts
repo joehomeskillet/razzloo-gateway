@@ -19,8 +19,8 @@ import {
 import { SessionStore, type SessionRecord } from "./store.js";
 import { JoinLockout } from "./lockout.js";
 import { channels, decide } from "./update-gate.js";
-import { renderJoinPage } from "./join-page.js";
-import { qrSvg } from "./qr.js";
+import { renderJoinPage, JOIN_PAGE_JS, JOIN_PAGE_CSS } from "./join-page.js";
+import { qrSvg, qrPlaceholderSvg } from "./qr.js";
 import { codeHash } from "./log.js";
 import { randomUUID } from "node:crypto";
 
@@ -103,6 +103,15 @@ function bearer(req: FastifyRequest): string | null {
   return t === "" ? null : t;
 }
 
+// L3: require an explicit application/json Content-Type on mutating JSON
+// endpoints (threat-model §11). Rejects form/text bodies (CSRF-friendly content
+// types) and missing content-type. Returns true when the request may proceed.
+function requireJsonContentType(req: FastifyRequest): boolean {
+  const ct = req.headers["content-type"];
+  if (typeof ct !== "string") return false;
+  return ct.split(";")[0]!.trim().toLowerCase() === "application/json";
+}
+
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const store = deps.store ?? new SessionStore();
   const lockout = deps.lockout ?? new JoinLockout();
@@ -111,7 +120,43 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: false,
     bodyLimit: config.bodyLimitBytes, // body size cap (§11)
-    trustProxy: true, // behind Caddy — use X-Forwarded-For for client IP
+    // M1: trust ONLY the immediate proxy hop (Caddy). `true` would honour the
+    // full X-Forwarded-For chain, letting a client spoof its source IP and
+    // bypass the per-IP rate-limit / join lockout if the app is ever reached
+    // directly. `1` = use the right-most XFF entry (the address Caddy saw).
+    trustProxy: 1,
+  });
+
+  // M2: bound the lockout map and keep the store reaper alive even when the app
+  // is built directly (tests / embedders) and not via server.ts. startSweep()
+  // and the prune interval are idempotent + .unref()'d, so this is a safe no-op
+  // when server.ts already started them.
+  store.startSweep();
+  const lockoutPruneTimer = setInterval(
+    () => lockout.prune(),
+    config.sweepIntervalMs,
+  );
+  lockoutPruneTimer.unref();
+  app.addHook("onClose", async () => {
+    clearInterval(lockoutPruneTimer);
+    store.stopSweep();
+  });
+
+  // L3: restrictive CORS stance (threat-model §11 — no permissive `*`). The
+  // JSON API is same-origin (the /j page fetches it from the gateway origin).
+  // We do NOT emit Access-Control-Allow-Origin, so browsers block any
+  // cross-origin read. Preflight (OPTIONS) is answered without an allow-origin.
+  app.addHook("onRequest", async (req, reply) => {
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      // Echo nothing back: absence of ACAO == cross-origin denied. Vary so
+      // shared caches don't serve a wrong-origin variant.
+      reply.header("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS") {
+      // No allow-origin header => preflight fails closed.
+      return reply.code(204).send();
+    }
   });
 
   if (enableRateLimit) {
@@ -138,6 +183,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     "/api/v1/sessions",
     { config: rl(10, "10 minutes") },
     async (req, reply) => {
+      if (!requireJsonContentType(req)) {
+        return reply
+          .code(415)
+          .send({ error: "unsupported_media_type", message: "Content-Type: application/json required." });
+      }
       const parsed = RegisterBody.safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send(zodToError(parsed.error));
@@ -186,6 +236,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
       if (!store.tokenMatches(rec, token)) {
         return reply.code(403).send({ error: "token_mismatch", message: "Token does not own this session." });
+      }
+
+      // L3: if a body is present it MUST be application/json. A pure heartbeat
+      // (no body) is allowed through with no content-type.
+      const hasBody = req.body !== undefined && req.body !== null;
+      if (hasBody && !requireJsonContentType(req)) {
+        return reply
+          .code(415)
+          .send({ error: "unsupported_media_type", message: "Content-Type: application/json required." });
       }
 
       const parsed = PatchBody.safeParse(req.body ?? {});
@@ -260,6 +319,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     },
   );
 
+  // C1: strict CSP for the served HTML. Set IN THE APP so it exists even if
+  // Caddy is bypassed. The bootstrap script + stylesheet are same-origin static
+  // files (/j/app.js, /j/app.css), so script-src is 'self' (NO 'unsafe-inline').
+  const JOIN_PAGE_CSP =
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'";
+
   // ── GET /j/:code (§8) — human navigation page ─────────────────────────────
   app.get<{ Params: { joinCode: string } }>(
     "/j/:joinCode",
@@ -267,25 +333,55 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     async (req, reply) => {
       // The page is served regardless of code validity; its script resolves via
       // /api/v1/join and shows the same 404 copy. This keeps the HTML cacheable
-      // and avoids a second exists-oracle.
+      // and avoids a second exists-oracle. The code is sanitized to the join-code
+      // charset inside renderJoinPage (no XSS sink, C1).
       reply.header("content-type", "text/html; charset=utf-8");
+      reply.header("content-security-policy", JOIN_PAGE_CSP);
+      reply.header("x-content-type-options", "nosniff");
       return reply.send(renderJoinPage(req.params.joinCode ?? ""));
     },
   );
 
+  // ── Static bootstrap assets for the join page (CSP 'self') ────────────────
+  app.get("/j/app.js", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    reply.header("content-type", "application/javascript; charset=utf-8");
+    reply.header("cache-control", "public, max-age=3600");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send(JOIN_PAGE_JS);
+  });
+
+  app.get("/j/app.css", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    reply.header("content-type", "text/css; charset=utf-8");
+    reply.header("cache-control", "public, max-age=3600");
+    return reply.send(JOIN_PAGE_CSS);
+  });
+
   // ── GET /j/:code/qr.svg — same-origin QR for the navigation URL ──────────
+  // H2: this route now goes through the SAME lockout path as the JSON resolver
+  // (isLocked / recordMiss / recordHit) and serves a GENERIC placeholder SVG
+  // with status 200 for unknown/expired codes — so it is not a brute-force
+  // bypass and not an existence oracle (unknown vs known are both 200 + SVG).
   app.get<{ Params: { joinCode: string } }>(
     "/j/:joinCode/qr.svg",
     { config: rl(60, "1 minute") },
     async (req, reply) => {
+      const ip = req.ip;
+      reply.header("content-type", "image/svg+xml; charset=utf-8");
+      reply.header("cache-control", "no-store");
+      if (lockout.isLocked(ip)) {
+        reply.header("Retry-After", "600");
+        reply.code(429);
+        return reply.send(await qrPlaceholderSvg());
+      }
       const code = (req.params.joinCode ?? "").toUpperCase();
       const rec = JOIN_CODE_RE.test(code) ? store.getLiveByCode(code) : undefined;
       if (!rec || rec.candidates.length === 0) {
-        return reply.code(404).send({ error: "unknown_join_code" });
+        // Same lockout accounting + generic 200 placeholder as the JSON 404.
+        lockout.recordMiss(ip);
+        return reply.send(await qrPlaceholderSvg());
       }
+      lockout.recordHit(ip);
       const sorted = [...rec.candidates].sort((a, b) => a.priority - b.priority);
-      reply.header("content-type", "image/svg+xml; charset=utf-8");
-      reply.header("cache-control", "no-store");
       return reply.send(await qrSvg(sorted[0]!.url));
     },
   );

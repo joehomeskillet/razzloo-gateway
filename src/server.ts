@@ -7,14 +7,14 @@ import { config } from "./config.js";
 
 const store = new SessionStore();
 const lockout = new JoinLockout();
-store.startSweep();
-setInterval(() => lockout.prune(), config.sweepIntervalMs).unref();
 
+// buildApp() now wires the store sweep + lockout prune itself (M2), and tears
+// them down on app.close(). startSweep() is idempotent if called twice.
 const app = await buildApp({ store, lockout });
 
 const shutdown = async (signal: string) => {
-  store.stopSweep();
-  await app.close();
+  void signal;
+  await app.close(); // triggers onClose: stopSweep + clear prune timer
   process.exit(0);
 };
 process.on("SIGINT", () => void shutdown("SIGINT"));

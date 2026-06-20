@@ -148,7 +148,11 @@ function parseIPv6(host: string): number[] | null {
   if (!host.includes(":")) return null;
 
   let h = host;
-  // zone id (fe80::1%eth0) — strip for classification
+  // zone id (fe80::1%eth0) — strip for classification.
+  // L1 (usability-only, intentionally NOT fixed): we discard the zone id rather
+  // than reject it. A link-local literal with a zone id is classified by its
+  // address bits alone; the zone is a host-side scope hint, not a security
+  // boundary here (it never widens an address's class), so dropping it is safe.
   const pct = h.indexOf("%");
   if (pct !== -1) h = h.slice(0, pct);
 
@@ -189,7 +193,7 @@ function parseIPv6(host: string): number[] | null {
   return all;
 }
 
-function classifyIPv6(groups: number[], original: string): IpClass {
+function classifyIPv6(groups: number[], _original: string): IpClass {
   const g0 = groups[0]!;
   // unspecified ::
   if (groups.every((g) => g === 0)) return "forbidden";
@@ -201,16 +205,21 @@ function classifyIPv6(groups: number[], original: string): IpClass {
   if ((g0 & 0xfe00) === 0xfc00) return "lan";
   // multicast ff00::/8
   if ((g0 & 0xff00) === 0xff00) return "forbidden";
-  // IPv4-mapped ::ffff:0:0/96 — classify by the embedded v4
-  if (
-    groups.slice(0, 5).every((g) => g === 0) &&
-    groups[5] === 0xffff &&
-    original.includes(".")
-  ) {
-    const tail = original.split(":").pop()!;
-    const v4 = parseIPv4(tail);
-    if (v4) return classifyIPv4(v4);
+  // IPv4-mapped ::ffff:0:0/96 — ALWAYS reconstruct the embedded v4 from the
+  // low groups and classify it. WHATWG URL canonicalizes `::ffff:127.0.0.1`
+  // to `::ffff:7f00:1` (no dot), so we must NOT gate on a literal "." in the
+  // input — that gate let mapped loopback/private/metadata through as public
+  // (H1). The same /96 prefix is also IPv4-translated (RFC 6052); both are
+  // never a legitimate public host candidate, so reconstruct-and-classify.
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    const g6 = groups[6]!;
+    const g7 = groups[7]!;
+    const v4 = [g6 >> 8, g6 & 0xff, g7 >> 8, g7 & 0xff];
+    // ::ffff:0:0 (the /96 base, all-zero v4) is itself unspecified-equivalent.
+    return classifyIPv4(v4);
   }
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052) — not a real host.
+  if (g0 === 0x0064 && groups[1] === 0xff9b) return "forbidden";
   // documentation 2001:db8::/32
   if (g0 === 0x2001 && groups[1] === 0x0db8) return "forbidden";
   return "public";

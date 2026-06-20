@@ -86,15 +86,20 @@ test("zero outbound socket / fetch / DNS toward a candidate during the full flow
   );
 });
 
-test("/j page never fetch-probes http candidates (no fetch of candidate urls in HTML)", async () => {
+test("/j page never fetch-probes http candidates (no fetch of candidate urls in bootstrap)", async () => {
   const { app } = await makeApp();
   const reg = (await register(app)).json();
   const page = await app.inject({ method: "GET", url: "/j/" + reg.joinCode });
-  // The page resolves same-origin via /api/v1/join only; it must not contain a
-  // fetch()/ws of an http candidate. The only fetch is to /api/v1/join.
+  // C1: the page no longer inlines its script — the bootstrap is the same-origin
+  // static /j/app.js (CSP script-src 'self'). Probe-avoidance is asserted there.
+  const js = (await app.inject({ method: "GET", url: "/j/app.js" })).body;
   const html = page.body;
-  assert.ok(html.includes("/api/v1/join/"), "page resolves via same-origin gateway");
-  assert.ok(!/fetch\(\s*['"`]http:\/\//.test(html), "no fetch() of an http candidate");
-  assert.ok(!/new WebSocket\(\s*['"`]ws:\/\//.test(html), "no ws:// probe in page");
+  assert.ok(html.includes("/j/app.js"), "HTML loads the same-origin bootstrap");
+  assert.ok(js.includes("/api/v1/join/"), "bootstrap resolves via same-origin gateway");
+  // Case-INSENSITIVE: a probe of http:// or ws:// in ANY casing must be absent.
+  // (The old test was lowercase-only; an attacker controls neither casing here,
+  // but the assertion should not be fooled by HTTP://.)
+  assert.ok(!/fetch\(\s*['"`]https?:\/\//i.test(js), "no fetch() of an http candidate");
+  assert.ok(!/new WebSocket\(\s*['"`]wss?:\/\//i.test(js), "no ws:// probe in bootstrap");
   await app.close();
 });

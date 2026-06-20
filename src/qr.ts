@@ -11,3 +11,11 @@ export async function qrSvg(text: string): Promise<string> {
     errorCorrectionLevel: "M",
   });
 }
+
+// Generic placeholder for unknown/expired/locked codes (H2). Returning a 200
+// SVG of the same shape keeps the qr.svg route from being an existence oracle
+// or a brute-force bypass: every code yields an SVG, only valid ones encode a
+// real host URL. Static literal (no untrusted input).
+export async function qrPlaceholderSvg(): Promise<string> {
+  return qrSvg("razzoozle");
+}
