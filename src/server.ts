@@ -10,13 +10,18 @@ import type net from "node:net";
 const store = new SessionStore();
 const lockout = new JoinLockout();
 
-// buildApp() now wires the store sweep + lockout prune itself (M2), and tears
-// them down on app.close(). startSweep() is idempotent if called twice.
-const app = await buildApp({ store, lockout });
-
 // P0-1: ONE shared tunnels map, passed by reference into BOTH the WS upgrade
 // handler (attachRelay) and the raw TCP player listener (startRelayListener).
+// Declared BEFORE buildApp so its .size feeds the public stats route.
 const tunnels = new Map<string, Tunnel>();
+
+// buildApp() now wires the store sweep + lockout prune itself (M2), and tears
+// them down on app.close(). startSweep() is idempotent if called twice.
+const app = await buildApp({
+  store,
+  lockout,
+  getLiveTunnels: () => tunnels.size,
+});
 
 // Wire the relay tunnel if enabled
 let relayServer: net.Server | undefined;

@@ -49,6 +49,10 @@ export class SessionStore {
   private byId = new Map<string, SessionRecord>();
   private byCode = new Map<string, string>(); // joinCode -> sessionId
   private sweepTimer: NodeJS.Timeout | null = null;
+  // Monotonic cumulative count of sessions ever created since boot. Drives the
+  // public "Sessions hosted" aggregate. Never decremented (rows are reaped, the
+  // counter is not). No per-session datum is retained.
+  private totalCreated = 0;
 
   // Optional hook fired with a joinCode whenever its row leaves the store
   // (sweep-reap on expiry OR explicit delete/unregister). The relay binds this
@@ -90,6 +94,7 @@ export class SessionStore {
     };
     this.byId.set(sessionId, record);
     this.byCode.set(joinCode, sessionId);
+    this.totalCreated++;
     return { record, rawToken };
   }
 
@@ -187,5 +192,43 @@ export class SessionStore {
 
   size(): number {
     return this.byId.size;
+  }
+
+  // ── Aggregate stats (privacy-safe). Single pass over byId, refreshing derived
+  // status. Returns ONLY counts — no joinCode / sessionId / hostId / candidate /
+  // token datum leaves this method. `live` = non-expired rows (waiting + online
+  // + offline). Used by the public GET /api/v1/stats route. ────────────────────
+  stats(now = Date.now()): {
+    live: number;
+    waiting: number;
+    online: number;
+    offline: number;
+    totalCreated: number;
+  } {
+    let waiting = 0;
+    let online = 0;
+    let offline = 0;
+    for (const rec of this.byId.values()) {
+      this.refreshStatus(rec, now);
+      switch (rec.status) {
+        case "waiting":
+          waiting++;
+          break;
+        case "online":
+          online++;
+          break;
+        case "offline":
+          offline++;
+          break;
+        // expired rows are not live; ignored
+      }
+    }
+    return {
+      live: waiting + online + offline,
+      waiting,
+      online,
+      offline,
+      totalCreated: this.totalCreated,
+    };
   }
 }

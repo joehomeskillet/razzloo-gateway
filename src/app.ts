@@ -20,6 +20,8 @@ import { SessionStore, type SessionRecord } from "./store.js";
 import { JoinLockout } from "./lockout.js";
 import { channels, decide } from "./update-gate.js";
 import { renderJoinPage, JOIN_PAGE_JS, JOIN_PAGE_CSS } from "./join-page.js";
+import { renderStatsPage, STATS_PAGE_JS, STATS_PAGE_CSS } from "./stats-page.js";
+import { RUBIK_WOFF2_B64 } from "./rubik-font.js";
 import { qrSvg, qrPlaceholderSvg } from "./qr.js";
 import { codeHash } from "./log.js";
 import { randomUUID } from "node:crypto";
@@ -28,7 +30,18 @@ export interface AppDeps {
   store?: SessionStore;
   lockout?: JoinLockout;
   enableRateLimit?: boolean;
+  // Live relay tunnel count for the public stats page. Optional + defaults to
+  // () => 0 so tests / embedders that don't run the relay get 0 (additive).
+  getLiveTunnels?: () => number;
 }
+
+// Boot timestamp captured at module init; drives uptimeSeconds on /api/v1/stats.
+const BOOT_MS = Date.now();
+void BOOT_MS; // uptime is read from process.uptime(); BOOT_MS kept for clarity
+
+// Decode the self-hosted Rubik woff2 ONCE (not per request). Served verbatim at
+// GET /fonts/rubik.woff2. font-src falls back to 'self' under JOIN_PAGE_CSP.
+const RUBIK_WOFF2 = Buffer.from(RUBIK_WOFF2_B64, "base64");
 
 // Map a zod error to a protocol error code. Unknown-key issues => forbidden_field.
 function zodToError(err: ZodError): {
@@ -116,6 +129,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const store = deps.store ?? new SessionStore();
   const lockout = deps.lockout ?? new JoinLockout();
   const enableRateLimit = deps.enableRateLimit ?? true;
+  const getLiveTunnels = deps.getLiveTunnels ?? (() => 0);
 
   const app = Fastify({
     logger: false,
@@ -354,6 +368,60 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     reply.header("content-type", "text/css; charset=utf-8");
     reply.header("cache-control", "public, max-age=3600");
     return reply.send(JOIN_PAGE_CSS);
+  });
+
+  // ── GET / — public FLAT-CREAM animated stats dashboard ────────────────────
+  // Static HTML (no per-request interpolation, no XSS sink). Reuses the same
+  // strict CSP as the join page: the only script is the same-origin /stats.js.
+  app.get("/", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    reply.header("content-type", "text/html; charset=utf-8");
+    reply.header("content-security-policy", JOIN_PAGE_CSP);
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("cache-control", "no-store");
+    return reply.send(renderStatsPage());
+  });
+
+  app.get("/stats.js", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    reply.header("content-type", "application/javascript; charset=utf-8");
+    reply.header("cache-control", "public, max-age=3600");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send(STATS_PAGE_JS);
+  });
+
+  app.get("/stats.css", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    reply.header("content-type", "text/css; charset=utf-8");
+    reply.header("cache-control", "public, max-age=3600");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send(STATS_PAGE_CSS);
+  });
+
+  // ── GET /api/v1/stats — privacy-safe AGGREGATE counts ONLY ────────────────
+  // No per-session datum (no join code / sessionId / hostId / IP / candidate /
+  // token) ever appears here. Only integer counts + uptime.
+  app.get("/api/v1/stats", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    const s = store.stats();
+    const relayTunnels = getLiveTunnels();
+    reply.header("content-type", "application/json; charset=utf-8");
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send({
+      liveSessions: s.live,
+      waiting: s.waiting,
+      online: s.online,
+      offline: s.offline,
+      relayTunnels,
+      totalRegistered: s.totalCreated,
+      uptimeSeconds: Math.floor(process.uptime()),
+      serverTime: new Date().toISOString(),
+    });
+  });
+
+  // ── GET /fonts/rubik.woff2 — self-hosted brand font (font-src 'self') ─────
+  app.get("/fonts/rubik.woff2", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    reply.header("content-type", "font/woff2");
+    reply.header("cache-control", "public, max-age=31536000, immutable");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send(RUBIK_WOFF2);
   });
 
   // ── GET /j/:code/qr.svg — same-origin QR for the navigation URL ──────────
