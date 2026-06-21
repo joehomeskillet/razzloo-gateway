@@ -50,9 +50,20 @@ export function renderJoinPage(rawCode: string): string {
   <h1>Join game <span class="code">${safeCode}</span></h1>
   <div id="status" class="muted">Looking up host&hellip;</div>
   <div id="action" hidden>
-    <p>Tap an address to open the host. If the first link does not open the game,
-       try the next one - this page cannot test the links for you.</p>
-    <ul id="cands" class="cands"></ul>
+    <div id="lan-section">
+      <p class="section-label">Join game on this Wi-Fi</p>
+      <ul id="lan-cands" class="cands"></ul>
+    </div>
+    <div id="remote-section" hidden>
+      <p class="section-label">Join from outside / Remote</p>
+      <p>If the first link does not open the game, try the next one - this page cannot test the links for you.</p>
+      <ul id="remote-cands" class="cands"></ul>
+    </div>
+    <div id="empty-state" hidden>
+      <p>Tap an address to open the host. If the first link does not open the game,
+         try the next one - this page cannot test the links for you.</p>
+      <ul id="cands" class="cands"></ul>
+    </div>
   </div>
   <div id="fail" class="warn" hidden></div>
   <p class="warn">You must be on the <strong>same Wi-Fi</strong> as the host for a
@@ -74,6 +85,7 @@ h1 { font-size: 1.25rem; }
        background: #2563eb; color: #fff; text-decoration: none;
        border: 0; border-radius: .5rem; font-weight: 600; cursor: pointer; }
 .muted { color: #666; font-size: .9rem; }
+.section-label { font-weight: 600; margin: 1.5rem 0 .75rem 0; font-size: .95rem; }
 .cands { list-style: none; padding: 0; margin: 1rem 0; }
 .cand { border: 1px solid #d4d4d8; border-radius: .6rem; padding: .9rem 1rem;
         margin: .75rem 0; }
@@ -94,13 +106,18 @@ h1 { font-size: 1.25rem; }
 // the sanitized join code from body[data-code]; never receives it via inline
 // interpolation. Candidate kind/url are injected via .textContent / setAttribute
 // (DOM API, no innerHTML for candidate data) so a hostile candidate value cannot
-// inject markup. Phase 4: render EVERY candidate priority-ordered, each a
-// top-level-navigation <a href> button + a small same-origin per-candidate QR.
+// inject markup. Phase 4: render LAN candidates with target="_blank" for same-tab
+// gateway survival; public/manual/ipv6 candidates as same-tab top-level-nav.
 export const JOIN_PAGE_JS = `(function () {
   var CODE = document.body.getAttribute('data-code') || '';
   var statusEl = document.getElementById('status');
   var actionEl = document.getElementById('action');
   var failEl = document.getElementById('fail');
+  var lanSection = document.getElementById('lan-section');
+  var remoteSection = document.getElementById('remote-section');
+  var emptyState = document.getElementById('empty-state');
+  var lanCandsEl = document.getElementById('lan-cands');
+  var remoteCandsEl = document.getElementById('remote-cands');
   var candsEl = document.getElementById('cands');
 
   // Defense-in-depth (F4): only http/https candidate urls become a clickable
@@ -119,7 +136,7 @@ export const JOIN_PAGE_JS = `(function () {
     statusEl.hidden = true;
   }
 
-  function renderCandidate(c, index) {
+  function renderCandidate(c, index, isLan) {
     var url = safeHttpUrl(c.url);
     var li = document.createElement('li');
     li.className = 'cand';
@@ -138,7 +155,14 @@ export const JOIN_PAGE_JS = `(function () {
       // API already vetted the scheme. Top-level nav to the host's own origin.
       a.setAttribute('href', url);
       a.setAttribute('rel', 'noopener noreferrer');
-      a.textContent = 'Open game'; // url shown separately below, also as text
+      // LAN candidates open in a new tab so the HTTPS gateway tab survives as
+      // the relay/fallback. Public/manual/ipv6 candidates open same-tab.
+      if (isLan) {
+        a.setAttribute('target', '_blank');
+        a.textContent = 'Join on this Wi-Fi'; // LAN-specific copy
+      } else {
+        a.textContent = 'Open game'; // url shown separately below, also as text
+      }
       head.appendChild(a);
     } else {
       var bad = document.createElement('span');
@@ -153,10 +177,10 @@ export const JOIN_PAGE_JS = `(function () {
     urlEl.textContent = c.url; // raw url as inert text (escaped by the DOM)
     li.appendChild(urlEl);
 
-    if (c.kind === 'lan') {
+    if (isLan) {
       var note = document.createElement('div');
       note.className = 'cand-note muted';
-      note.textContent = 'Make sure your phone is on the same Wi-Fi as the host.';
+      note.textContent = 'Opens in a new tab. If it does not work, close this tab and try from outside.';
       li.appendChild(note);
     }
 
@@ -200,8 +224,40 @@ export const JOIN_PAGE_JS = `(function () {
     // then public-ipv6/ipv4, then manual, upnp last; numeric priority within a
     // kind). The per-candidate QR at /j/<code>/qr.svg?i=<index> indexes into
     // this SAME order, so each QR encodes its own candidate's url.
-    candsEl.textContent = ''; // clear; never innerHTML with candidate data
-    cands.forEach(function (c, i) { candsEl.appendChild(renderCandidate(c, i)); });
+    lanCandsEl.textContent = ''; // clear; never innerHTML with candidate data
+    remoteCandsEl.textContent = ''; // clear
+    candsEl.textContent = ''; // clear
+
+    var hasLan = false;
+    var hasRemote = false;
+
+    cands.forEach(function (c, i) {
+      if (c.kind === 'lan') {
+        hasLan = true;
+        lanCandsEl.appendChild(renderCandidate(c, i, true));
+      } else {
+        hasRemote = true;
+        remoteCandsEl.appendChild(renderCandidate(c, i, false));
+      }
+    });
+
+    // Layout: if we have LAN candidates, show them prominently. If we also have
+    // remote, show remote below. If NO LAN (edge case: shouldn't happen in normal
+    // flow), fall back to the legacy flat list.
+    if (hasLan) {
+      lanSection.hidden = false;
+      emptyState.hidden = true;
+      if (hasRemote) {
+        remoteSection.hidden = false;
+      }
+    } else {
+      // Fallback: no LAN found, show all candidates in legacy flat layout
+      lanSection.hidden = true;
+      remoteSection.hidden = true;
+      emptyState.hidden = false;
+      cands.forEach(function (c, i) { candsEl.appendChild(renderCandidate(c, i, false)); });
+    }
+
     statusEl.hidden = true; actionEl.hidden = false;
     if (data.status === 'offline') {
       statusEl.hidden = false;
