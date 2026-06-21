@@ -319,8 +319,22 @@ export function startRelayListener(
       }
 
       const host = hostMatch[1]!.trim();
-      const code = host.split(":")[0]!.split(".")[0]!;
-      const tunnel = tunnels.get(code);
+      const hostNoPort = host.split(":")[0]!;
+      let tunnel = tunnels.get(hostNoPort.split(".")[0]!);
+      // Fixed single-host relay: a dedicated hostname (config.relayFixedHost, e.g.
+      // play.razzoozle.xyz) proxies the ONE active host tunnel — avoids per-code
+      // wildcard DNS/TLS. Routes ONLY when exactly one tunnel is live; 0 or 2+ ->
+      // refuse, never guess a host (no cross-wire). ponytail: single active host;
+      // for concurrent hosts deploy *.gw wildcard + per-code labels.
+      if (!tunnel && config.relayFixedHost && hostNoPort.toLowerCase() === config.relayFixedHost) {
+        if (tunnels.size === 1) {
+          tunnel = tunnels.values().next().value;
+        } else {
+          sock.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+          sock.end();
+          return;
+        }
+      }
       if (!tunnel) {
         sock.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         sock.end();

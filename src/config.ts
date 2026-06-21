@@ -22,6 +22,10 @@ export const config = {
   relayMaxPendingStreams: num(process.env.RELAY_MAX_PENDING_STREAMS, 64),
   // Park window: a player conn waits this long for its DATA ws before 504.
   relayParkMs: num(process.env.RELAY_PARK_MS, 10 * 1000),
+  // Single fixed relay hostname (e.g. "play.razzoozle.xyz") that proxies the ONE
+  // active host tunnel — avoids per-code wildcard DNS/TLS. Empty = off (per-code
+  // subdomain routing only). Routes only when EXACTLY ONE tunnel is live.
+  relayFixedHost: (process.env.RELAY_FIXED_HOST ?? "").trim().toLowerCase(),
 
   // TTL / heartbeat / offline (§12), in milliseconds.
   ttlMs: num(process.env.SESSION_TTL_MS, 30 * 60 * 1000), // 30 min

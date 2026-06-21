@@ -41,7 +41,11 @@ interface RelayInstance {
   relayPort: number;
 }
 
-async function spawnRelay(app: FastifyInstance, store: SessionStore): Promise<RelayInstance> {
+async function spawnRelay(
+  app: FastifyInstance,
+  store: SessionStore,
+  cfgOverride: Partial<typeof config> = {},
+): Promise<RelayInstance> {
   const tunnels = new Map<string, Tunnel>();
   await attachRelay(app, store, config, tunnels);
   // The WS upgrade handler lives on app.server, so the fastify HTTP server must
@@ -49,7 +53,7 @@ async function spawnRelay(app: FastifyInstance, store: SessionStore): Promise<Re
   await app.listen({ port: 0, host: "127.0.0.1" });
   const gwPort = (app.server.address() as net.AddressInfo).port;
   // Bind the raw player listener on an ephemeral port via a config override.
-  const relay = startRelayListener(store, { ...config, relayPort: 0 }, tunnels);
+  const relay = startRelayListener(store, { ...config, relayPort: 0, ...cfgOverride }, tunnels);
   await wait(50); // let the net listener bind
   const relayPort = (relay.address() as net.AddressInfo).port;
   return { tunnels, relay, gwPort, relayPort };
@@ -137,6 +141,22 @@ function playerRoundTrip(relayPort: number, joinCode: string, path = "/ping"): P
   });
 }
 
+// Like playerRoundTrip but with an arbitrary Host header (for fixed-host routing).
+function playerRaw(relayPort: number, hostHeader: string, path = "/ping"): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let response = "";
+    const sock = net.connect(relayPort, "127.0.0.1", () => {
+      sock.write(`GET ${path} HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n\r\n`);
+    });
+    sock.on("data", (chunk: Buffer) => {
+      response += chunk.toString();
+    });
+    sock.on("close", () => resolve(response));
+    sock.on("error", reject);
+    setTimeout(() => reject(new Error("player raw timeout")), 3000);
+  });
+}
+
 // A fake backend HTTP server that answers every request with a fixed body.
 async function fakeBackend(body: string): Promise<{ port: number; close: () => void }> {
   const server = createHttpServer((_req, res) => {
@@ -150,6 +170,62 @@ async function fakeBackend(body: string): Promise<{ port: number; close: () => v
 }
 
 // ── tests ────────────────────────────────────────────────────────────────
+
+test("relay: fixed-host routes to the single active tunnel (R0 single-host, no wildcard)", async () => {
+  const { app, store } = await makeApp();
+  const createRes = await app.inject({ method: "POST", url: "/api/v1/sessions", payload: registerBody() });
+  assert.equal(createRes.statusCode, 201);
+  const { sessionId, hostToken } = createRes.json();
+
+  const backend = await fakeBackend("PONG-FIXEDHOST");
+  const { relay, gwPort, relayPort } = await spawnRelay(app, store, { relayFixedHost: "play.razzoozle.xyz" });
+  const host = fakeHost({ gwPort, sessionId, hostToken, backendPort: backend.port });
+  try {
+    await host.ready;
+    const response = await playerRaw(relayPort, "play.razzoozle.xyz", "/ping");
+    assert.ok(response.includes("200"), `expected 200 via fixed host, got:\n${response}`);
+    assert.ok(response.includes("PONG-FIXEDHOST"), `backend body must round-trip via fixed host, got:\n${response}`);
+  } finally {
+    host.close();
+    await closeServer(relay);
+    backend.close();
+    await app.close();
+  }
+});
+
+test("relay: fixed-host refuses (503) when no host tunnel is live", async () => {
+  const { app, store } = await makeApp();
+  const { relay, relayPort } = await spawnRelay(app, store, { relayFixedHost: "play.razzoozle.xyz" });
+  try {
+    const response = await playerRaw(relayPort, "play.razzoozle.xyz", "/ping");
+    assert.ok(response.includes("503"), `expected 503 with zero tunnels, got:\n${response}`);
+  } finally {
+    await closeServer(relay);
+    await app.close();
+  }
+});
+
+test("relay: fixed-host refuses (503) with two live tunnels (no cross-wire)", async () => {
+  const { app, store } = await makeApp();
+  const s1 = (await app.inject({ method: "POST", url: "/api/v1/sessions", payload: registerBody() })).json();
+  const s2 = (await app.inject({ method: "POST", url: "/api/v1/sessions", payload: registerBody() })).json();
+  const backend = await fakeBackend("X");
+  const { relay, gwPort, relayPort } = await spawnRelay(app, store, { relayFixedHost: "play.razzoozle.xyz" });
+  const h1 = fakeHost({ gwPort, sessionId: s1.sessionId, hostToken: s1.hostToken, backendPort: backend.port });
+  const h2 = fakeHost({ gwPort, sessionId: s2.sessionId, hostToken: s2.hostToken, backendPort: backend.port });
+  try {
+    await h1.ready;
+    await h2.ready;
+    const response = await playerRaw(relayPort, "play.razzoozle.xyz", "/ping");
+    assert.ok(response.includes("503"), `expected 503 with two tunnels, got:\n${response}`);
+  } finally {
+    h1.close();
+    h2.close();
+    await closeServer(relay);
+    backend.close();
+    await app.close();
+  }
+});
 
 test("relay: CONTROL ws accepts valid token (header), rejects bad token (4401)", async () => {
   const { app, store } = await makeApp();
