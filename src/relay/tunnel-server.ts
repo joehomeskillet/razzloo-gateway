@@ -321,18 +321,18 @@ export function startRelayListener(
       const host = hostMatch[1]!.trim();
       const hostNoPort = host.split(":")[0]!;
       let tunnel = tunnels.get(hostNoPort.split(".")[0]!);
-      // Fixed single-host relay: a dedicated hostname (config.relayFixedHost, e.g.
-      // play.razzoozle.xyz) proxies the ONE active host tunnel — avoids per-code
-      // wildcard DNS/TLS. Routes ONLY when exactly one tunnel is live; 0 or 2+ ->
-      // refuse, never guess a host (no cross-wire). ponytail: single active host;
-      // for concurrent hosts deploy *.gw wildcard + per-code labels.
+      // Fixed single-host relay (config.relayFixedHost, e.g. play.razzoozle.xyz):
+      // the player URL carries the join code as ?pin=<code> (or /j/<code>). Key the
+      // tunnel by that code so ANY number of concurrent host tunnels route correctly
+      // — no wildcard DNS/TLS, no fragile single-tunnel guess.
       if (!tunnel && config.relayFixedHost && hostNoPort.toLowerCase() === config.relayFixedHost) {
-        if (tunnels.size === 1) {
-          tunnel = tunnels.values().next().value;
-        } else {
-          sock.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-          sock.end();
-          return;
+        const target = headStr.match(/^[A-Z]+\s+(\S+)/)?.[1];
+        if (target) {
+          const u = new URL(target, `http://${hostNoPort}`);
+          const code = (
+            u.searchParams.get("pin") || u.pathname.match(/\/j\/([^/]+)/)?.[1] || ""
+          ).toUpperCase();
+          if (code) tunnel = tunnels.get(code);
         }
       }
       if (!tunnel) {
