@@ -50,6 +50,16 @@ export class SessionStore {
   private byCode = new Map<string, string>(); // joinCode -> sessionId
   private sweepTimer: NodeJS.Timeout | null = null;
 
+  // Optional hook fired with a joinCode whenever its row leaves the store
+  // (sweep-reap on expiry OR explicit delete/unregister). The relay binds this
+  // to tear down the matching tunnel (close control WS + destroy pending socks)
+  // so a session row is never dropped while its tunnel is still open (§A P0-3).
+  private onExpire: ((joinCode: string) => void) | null = null;
+
+  setOnExpire(cb: ((joinCode: string) => void) | null): void {
+    this.onExpire = cb;
+  }
+
   // ── Create (POST) ─────────────────────────────────────────────────────────
   create(input: {
     hostId: string;
@@ -101,7 +111,9 @@ export class SessionStore {
   }
 
   // ── Heartbeat / candidate mutation (PATCH) ────────────────────────────────
-  heartbeat(rec: SessionRecord, candidates: StoredCandidate[] | null): void {
+  // `candidates` defaults to null so the relay can slide the TTL on live tunnel
+  // traffic via a bare `store.heartbeat(rec)` (no candidate mutation, §A P0-3).
+  heartbeat(rec: SessionRecord, candidates: StoredCandidate[] | null = null): void {
     const now = Date.now();
     if (candidates !== null) rec.candidates = candidates;
     rec.lastHeartbeatAt = now;
@@ -112,8 +124,12 @@ export class SessionStore {
   delete(sessionId: string): void {
     const rec = this.byId.get(sessionId);
     if (!rec) return;
-    this.byCode.delete(rec.joinCode);
+    const joinCode = rec.joinCode;
+    this.byCode.delete(joinCode);
     this.byId.delete(sessionId);
+    // Notify the relay AFTER the row is gone so its teardown can't observe a
+    // stale live row (and a re-entrant getById returns undefined).
+    this.onExpire?.(joinCode);
   }
 
   // Constant-time token check bound to this session (§11).
@@ -153,6 +169,9 @@ export class SessionStore {
 
   sweep(): void {
     const now = Date.now();
+    // Collect reaped joinCodes first; fire onExpire after mutation completes so
+    // the relay teardown runs outside this iteration and observes a clean store.
+    const reaped: string[] = [];
     for (const rec of this.byId.values()) {
       this.refreshStatus(rec, now);
       if (rec.status === "expired") {
@@ -160,8 +179,10 @@ export class SessionStore {
         // long-term data). A subsequent lookup is then "unknown" === expired.
         this.byCode.delete(rec.joinCode);
         this.byId.delete(rec.sessionId);
+        reaped.push(rec.joinCode);
       }
     }
+    for (const joinCode of reaped) this.onExpire?.(joinCode);
   }
 
   size(): number {
