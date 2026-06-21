@@ -36,6 +36,13 @@ export const config = {
   joinLockoutWindowMs: num(process.env.JOIN_LOCKOUT_WINDOW_MS, 5 * 60 * 1000),
   joinLockoutMs: num(process.env.JOIN_LOCKOUT_MS, 10 * 60 * 1000),
 
+  // Status-page uptime history persistence dir (UptimeRecorder writes
+  // uptime-history.json here; best-effort, never fatal if unwritable).
+  stateDir: process.env.GW_STATE_DIR ?? "/var/lib/razzloo-gateway",
+  // Is the *.gw wildcard TLS deployed? Until then the public player relay is
+  // honestly DEGRADED on the status page ("Wildcard TLS pending").
+  relayPublicReady: bool(process.env.RELAY_PUBLIC_READY, false),
+
   repo: "joehomeskillet/razzoozle-desktop" as const,
 };
 

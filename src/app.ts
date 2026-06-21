@@ -20,7 +20,9 @@ import { SessionStore, type SessionRecord } from "./store.js";
 import { JoinLockout } from "./lockout.js";
 import { channels, decide } from "./update-gate.js";
 import { renderJoinPage, JOIN_PAGE_JS, JOIN_PAGE_CSS } from "./join-page.js";
-import { renderStatsPage, STATS_PAGE_JS, STATS_PAGE_CSS } from "./stats-page.js";
+import { renderStatusPage, STATUS_PAGE_JS, STATUS_PAGE_CSS } from "./stats-page.js";
+import type { ComponentHistory, SampleStatus } from "./uptime.js";
+import { UPTIME_COMPONENTS } from "./uptime.js";
 import { RUBIK_WOFF2_B64 } from "./rubik-font.js";
 import { qrSvg, qrPlaceholderSvg } from "./qr.js";
 import { codeHash } from "./log.js";
@@ -33,6 +35,13 @@ export interface AppDeps {
   // Live relay tunnel count for the public stats page. Optional + defaults to
   // () => 0 so tests / embedders that don't run the relay get 0 (additive).
   getLiveTunnels?: () => number;
+  // Component uptime recorder for the status page. Optional + additive: when
+  // absent the /api/v1/status route still answers with computed-live component
+  // statuses and empty (nodata) 90-day history.
+  uptime?: {
+    history(): ComponentHistory[];
+    currentStatus(): Record<string, SampleStatus>;
+  };
 }
 
 // Boot timestamp captured at module init; drives uptimeSeconds on /api/v1/stats.
@@ -130,6 +139,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const lockout = deps.lockout ?? new JoinLockout();
   const enableRateLimit = deps.enableRateLimit ?? true;
   const getLiveTunnels = deps.getLiveTunnels ?? (() => 0);
+  const uptime = deps.uptime;
 
   const app = Fastify({
     logger: false,
@@ -370,29 +380,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     return reply.send(JOIN_PAGE_CSS);
   });
 
-  // ── GET / — public FLAT-CREAM animated stats dashboard ────────────────────
+  // ── GET / — public FLAT-CREAM status page (status.claude.com pattern) ──────
   // Static HTML (no per-request interpolation, no XSS sink). Reuses the same
   // strict CSP as the join page: the only script is the same-origin /stats.js.
+  // The inline logo SVG is markup (CSP-safe), not script/external.
   app.get("/", { config: rl(120, "1 minute") }, async (_req, reply) => {
     reply.header("content-type", "text/html; charset=utf-8");
     reply.header("content-security-policy", JOIN_PAGE_CSP);
     reply.header("x-content-type-options", "nosniff");
     reply.header("cache-control", "no-store");
-    return reply.send(renderStatsPage());
+    return reply.send(renderStatusPage());
   });
 
   app.get("/stats.js", { config: rl(120, "1 minute") }, async (_req, reply) => {
     reply.header("content-type", "application/javascript; charset=utf-8");
     reply.header("cache-control", "public, max-age=3600");
     reply.header("x-content-type-options", "nosniff");
-    return reply.send(STATS_PAGE_JS);
+    return reply.send(STATUS_PAGE_JS);
   });
 
   app.get("/stats.css", { config: rl(120, "1 minute") }, async (_req, reply) => {
     reply.header("content-type", "text/css; charset=utf-8");
     reply.header("cache-control", "public, max-age=3600");
     reply.header("x-content-type-options", "nosniff");
-    return reply.send(STATS_PAGE_CSS);
+    return reply.send(STATUS_PAGE_CSS);
   });
 
   // ── GET /api/v1/stats — privacy-safe AGGREGATE counts ONLY ────────────────
@@ -413,6 +424,78 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       totalRegistered: s.totalCreated,
       uptimeSeconds: Math.floor(process.uptime()),
       serverTime: new Date().toISOString(),
+    });
+  });
+
+  // ── GET /api/v1/status — privacy-safe component status + 90-day uptime ────
+  // Aggregate ONLY: component health + per-day uptime ratios + the same counts
+  // as /api/v1/stats. NEVER a join code / sessionId / hostId / IP / candidate.
+  // The 'relay-public' component is honestly DEGRADED until the *.gw wildcard
+  // TLS is deployed (config.relayPublicReady). Incidents are intentionally
+  // STATIC (empty): there is no incident store/timeline backend yet and wiring
+  // one is out of MVP scope.
+  app.get("/api/v1/status", { config: rl(120, "1 minute") }, async (_req, reply) => {
+    // Current per-component status: prefer the live recorder sample, else
+    // compute directly from config so the route works without a recorder.
+    const current: Record<string, SampleStatus> = uptime
+      ? uptime.currentStatus()
+      : {
+          rendezvous: "operational",
+          "relay-control": config.relayEnabled ? "operational" : "maintenance",
+          "relay-public": config.relayPublicReady ? "operational" : "degraded",
+        };
+
+    const hist = uptime ? uptime.history() : null;
+    const histByKey = new Map<string, ComponentHistory>();
+    if (hist) for (const h of hist) histByKey.set(h.key, h);
+
+    const components = UPTIME_COMPONENTS.map((c) => {
+      const status: SampleStatus = current[c.key] ?? "operational";
+      const h = histByKey.get(c.key);
+      const note =
+        c.key === "relay-public" && !config.relayPublicReady
+          ? "Wildcard TLS pending"
+          : undefined;
+      return {
+        key: c.key,
+        name: c.name,
+        status,
+        ...(note ? { note } : {}),
+        uptime90: h ? h.uptime90 : null,
+        days: h ? h.days : [],
+      };
+    });
+
+    // Overall = worst-of. down > degraded(==maintenance) > operational.
+    let overall: "operational" | "degraded" | "down" = "operational";
+    for (const c of components) {
+      if (c.status === "down") {
+        overall = "down";
+        break;
+      }
+      if (c.status === "degraded" || c.status === "maintenance") {
+        overall = "degraded";
+      }
+    }
+
+    const s = store.stats();
+    reply.header("content-type", "application/json; charset=utf-8");
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    return reply.send({
+      overall,
+      components,
+      live: {
+        liveSessions: s.live,
+        waiting: s.waiting,
+        online: s.online,
+        offline: s.offline,
+        relayTunnels: getLiveTunnels(),
+        totalRegistered: s.totalCreated,
+      },
+      incidents: [], // intentionally static — no incident backend (out of scope)
+      serverTime: new Date().toISOString(),
+      uptimeSeconds: Math.floor(process.uptime()),
     });
   });
 

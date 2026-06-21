@@ -4,6 +4,7 @@ import { buildApp } from "./app.js";
 import { SessionStore } from "./store.js";
 import { JoinLockout } from "./lockout.js";
 import { config } from "./config.js";
+import { UptimeRecorder, type SampleStatus } from "./uptime.js";
 import { attachRelay, startRelayListener, type Tunnel } from "./relay/tunnel-server.js";
 import type net from "node:net";
 
@@ -15,12 +16,32 @@ const lockout = new JoinLockout();
 // Declared BEFORE buildApp so its .size feeds the public stats route.
 const tunnels = new Map<string, Tunnel>();
 
+// Status-page uptime recorder. sample() reports each component's current health;
+// it folds into per-UTC-day rollups persisted under config.stateDir (best-effort,
+// never fatal). Honest: 'relay-public' is DEGRADED until the *.gw wildcard TLS
+// is deployed (config.relayPublicReady).
+const uptime = new UptimeRecorder({
+  stateDir: config.stateDir,
+  sample: (): Record<string, SampleStatus> => ({
+    rendezvous: "operational",
+    "relay-control": config.relayEnabled ? "operational" : "maintenance",
+    "relay-public": config.relayPublicReady ? "operational" : "degraded",
+  }),
+});
+uptime.start();
+
 // buildApp() now wires the store sweep + lockout prune itself (M2), and tears
 // them down on app.close(). startSweep() is idempotent if called twice.
 const app = await buildApp({
   store,
   lockout,
   getLiveTunnels: () => tunnels.size,
+  uptime,
+});
+
+// Stop the recorder (and flush) when the app closes (best-effort).
+app.addHook("onClose", async () => {
+  uptime.stop();
 });
 
 // Wire the relay tunnel if enabled
