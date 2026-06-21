@@ -115,4 +115,45 @@ on in the app so per-IP rate-limit / lockout key off the real client IP via
 - Join codes: 32-symbol unambiguous alphabet, 6 chars; wrong and expired codes
   return an identical `404 unknown_join_code` (no exists-but-expired oracle).
 - Logs never contain raw codes (hashed), host IPs/candidate URLs, or tokens.
+
+## Relay (R0) — full-game proxy deploy
+
+The relay lets remote players reach the host's bundled game over the internet
+without LAN reachability. The desktop host dials an outbound CONTROL WS
+(`wss://gw.razzoozle.xyz/relay`) plus a DATA WS per player; the gateway
+byte-pipes each player TCP connection into that tunnel (it parses the `Host:`
+line once to pick the tunnel, then pipes raw — no HTTP parsing on the data path,
+so the host's `:7777` front serves the SPA + `/ws` natively). Players connect to
+a per-code subdomain `<code>.gw.razzoozle.xyz`; the raw relay listener (default
+`:8788`) routes by the subdomain label. Enable with `RELAY_ENABLED=true`
+(+ `RELAY_PORT`, default `8788`). Host token travels in the WS
+`Authorization: Bearer` header (never the URL). A relay failure never affects LAN
+hosting (best-effort, isolated).
+
+### Caddy
+- `gw.razzoozle.xyz` -> `127.0.0.1:8787` already carries the CONTROL/DATA WS plane
+  (Caddy proxies the `Upgrade` transparently — no extra directive).
+- `*.gw.razzoozle.xyz` -> `127.0.0.1:8788` is the player data plane
+  (the `*.gw` block in `Caddyfile.example`).
+
+### Operator prerequisites (cannot be self-served — infra + secret)
+1. **Wildcard DNS:** `*.gw.razzoozle.xyz  A  <public IP>` (per-code subdomains).
+2. **Wildcard TLS = DNS-01 only.** HTTP-01 cannot issue `*.x` certs and Caddy
+   on-demand TLS is intentionally off house-wide. You need a caddy binary built
+   WITH a DNS provider plugin (`xcaddy build --with github.com/caddy-dns/<provider>`)
+   and that provider's API token (`GW_DNS_API_TOKEN`). The stock caddy binary
+   returns `module not registered: dns.providers.*` for `tls { dns }`.
+3. Point the `*.gw` Caddy block at the gateway's `RELAY_PORT`.
+
+The per-code-subdomain design is structural: the game SPA uses absolute asset
+paths (`base "/"`) and a same-origin `io("/")` socket, so a path prefix would
+break it and the game repo is not ours to change — hence subdomains, hence
+wildcard TLS.
+
+### This host
+`gw.razzoozle.xyz` already resolves here. The gateway runs as the
+`razzloo-gateway` systemd unit (`deploy/razzloo-gateway.service`) on loopback.
+NOTE: this box's `:8787` is held by wg-portal, so the live unit overrides
+`PORT=9787` (relay stays `8788`); a clean host keeps `8787`. The `*.gw` Caddy
+block + wildcard DNS/TLS are still pending the operator prerequisites above.
 ```

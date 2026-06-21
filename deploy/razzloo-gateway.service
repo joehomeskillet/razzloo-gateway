@@ -1,0 +1,29 @@
+# Razzoozle rendezvous + R0 relay gateway. Loopback-only; Caddy is the sole
+# public entrypoint. The Docker compose.yml is the alternative deploy; pick one.
+#
+# Install:  cp deploy/razzloo-gateway.service /etc/systemd/system/
+#           systemctl daemon-reload && systemctl enable --now razzloo-gateway
+# Reverse:  systemctl disable --now razzloo-gateway && rm /etc/systemd/system/razzloo-gateway.service && systemctl daemon-reload
+[Unit]
+Description=Razzloo gateway (rendezvous + R0 relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/nvmetank1/projects/razzloo-gateway
+ExecStart=/usr/bin/node dist/server.js
+Restart=on-failure
+RestartSec=3
+Environment=PORT=8787
+Environment=HOST=127.0.0.1
+Environment=RELAY_ENABLED=true
+Environment=RELAY_PORT=8788
+Environment=PUBLIC_BASE_URL=https://gw.razzoozle.xyz
+# If :8787 is taken on the host, override PORT (e.g. 9787) and point the Caddy
+# gw.razzoozle.xyz block at it. Relay tokens are ephemeral/in-memory — no secret env.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

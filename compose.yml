@@ -7,12 +7,17 @@ services:
     image: razzloo-gateway:latest
     restart: unless-stopped
     # Bind to loopback only — Caddy is the sole public entrypoint.
+    # :8787 = rendezvous API + relay CONTROL/DATA WS; :8788 = relay player listener.
     ports:
       - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8788:8788"
     environment:
       PORT: "8787"
       HOST: "0.0.0.0"
       PUBLIC_BASE_URL: "https://gw.razzoozle.xyz"
+      # R0 full-relay. The *.gw player listener needs wildcard TLS — see Caddyfile.example.
+      RELAY_ENABLED: "true"
+      RELAY_PORT: "8788"
       # TTL / sweep (§12) — override here if needed.
       SESSION_TTL_MS: "1800000"
       OFFLINE_GRACE_MS: "90000"

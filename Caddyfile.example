@@ -26,6 +26,9 @@ gw.razzoozle.xyz {
 
 	# Front-line connection limit (the app also rate-limits per route + locks out
 	# join brute-force). Caddy's built-in is intentionally coarse.
+	# This block also carries the R0 relay CONTROL/DATA plane: the desktop host
+	# dials wss://gw.razzoozle.xyz/relay and /relay-data — Caddy proxies the
+	# WebSocket Upgrade transparently, no extra directive needed.
 	reverse_proxy 127.0.0.1:8787 {
 		header_up X-Forwarded-For {remote_host}
 		header_up X-Real-IP {remote_host}
@@ -34,5 +37,35 @@ gw.razzoozle.xyz {
 	log {
 		output file /var/log/caddy/gw.razzoozle.xyz.log
 		# Do NOT log request bodies; Caddy access logs are URL-only by default.
+	}
+}
+
+# --- R0 full-relay player data plane ---------------------------------------
+# Each per-join-code subdomain <code>.gw.razzoozle.xyz is byte-piped into the
+# host's outbound tunnel by the raw relay listener on :8788 (it reads the Host
+# line once to pick the tunnel, then pipes raw). The relayed game serves its own
+# SPA + carries its OWN headers/CSP — do NOT apply the join-page CSP here.
+#
+# REQUIRES A WILDCARD CERT, which is DNS-01 ONLY (HTTP-01 cannot issue *.x certs,
+# and Caddy on-demand TLS is intentionally disabled house-wide). To enable:
+#   1. a caddy binary built WITH a DNS provider plugin for razzoozle.xyz's DNS host:
+#        xcaddy build --with github.com/caddy-dns/<provider>
+#      The stock caddy binary returns `module not registered: dns.providers.*`
+#      for the `tls { dns }` directive below — this block fails `caddy validate`
+#      until the binary is rebuilt.
+#   2. that provider's API token in the environment (here: GW_DNS_API_TOKEN).
+#   3. a wildcard DNS record  *.gw.razzoozle.xyz  ->  <this host's public IP>.
+# Replace <provider> with the caddy-dns module name (e.g. cloudflare, desec, hetzner).
+*.gw.razzoozle.xyz {
+	encode zstd gzip
+	tls {
+		dns <provider> {env.GW_DNS_API_TOKEN}
+	}
+	reverse_proxy 127.0.0.1:8788 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+	}
+	log {
+		output file /var/log/caddy/gw-relay.razzoozle.xyz.log
 	}
 }
