@@ -430,8 +430,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ── GET /api/v1/status — privacy-safe component status + 90-day uptime ────
   // Aggregate ONLY: component health + per-day uptime ratios + the same counts
   // as /api/v1/stats. NEVER a join code / sessionId / hostId / IP / candidate.
-  // The 'relay-public' component is honestly DEGRADED until the *.gw wildcard
-  // TLS is deployed (config.relayPublicReady). Incidents are intentionally
+  // The 'relay-public' component reflects the remote player relay (the single
+  // fixed host play.razzoozle.xyz); operational once RELAY_PUBLIC_READY is set
+  // (the relay is deployed + cert-valid + routing). Incidents are intentionally
   // STATIC (empty): there is no incident store/timeline backend yet and wiring
   // one is out of MVP scope.
   app.get("/api/v1/status", { config: rl(120, "1 minute") }, async (_req, reply) => {
@@ -454,7 +455,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       const h = histByKey.get(c.key);
       const note =
         c.key === "relay-public" && !config.relayPublicReady
-          ? "Wildcard TLS pending"
+          ? "Relay not deployed"
           : undefined;
       return {
         key: c.key,

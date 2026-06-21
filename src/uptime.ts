@@ -18,7 +18,7 @@ import { join } from "node:path";
 export const UPTIME_COMPONENTS = [
   { key: "rendezvous", name: "Rendezvous API" },
   { key: "relay-control", name: "Relay control plane" },
-  { key: "relay-public", name: "Player relay (*.gw)" },
+  { key: "relay-public", name: "Player relay (play.razzoozle.xyz)" },
 ] as const;
 
 export type ComponentKey = (typeof UPTIME_COMPONENTS)[number]["key"];

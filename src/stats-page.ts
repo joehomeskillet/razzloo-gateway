@@ -689,7 +689,7 @@ export function renderStatusPage(): string {
     <ul class="components" role="list">
 ${componentRow("rendezvous", "Rendezvous API")}
 ${componentRow("relay-control", "Relay control plane")}
-${componentRow("relay-public", "Player relay (*.gw)")}
+${componentRow("relay-public", "Player relay (play.razzoozle.xyz)")}
     </ul>
   </section>
 
