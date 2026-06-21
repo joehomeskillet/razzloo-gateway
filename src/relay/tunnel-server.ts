@@ -322,18 +322,17 @@ export function startRelayListener(
       const hostNoPort = host.split(":")[0]!;
       let tunnel = tunnels.get(hostNoPort.split(".")[0]!);
       // Fixed single-host relay (config.relayFixedHost, e.g. play.razzoozle.xyz):
-      // the player URL carries the join code as ?pin=<code> (or /j/<code>). Key the
-      // tunnel by that code so ANY number of concurrent host tunnels route correctly
-      // — no wildcard DNS/TLS, no fragile single-tunnel guess.
+      // ONE presenter hosts at a time. The player URL is clean or carries the GAME
+      // pin (?pin=<code>) which belongs to the HOST, not to the relay — so we pick
+      // the host by liveness and byte-pipe the whole request through (pin included),
+      // never key the tunnel on the pin. Count only OPEN control sockets so a stale
+      // or reconnecting tunnel can't block the one live host.
       if (!tunnel && config.relayFixedHost && hostNoPort.toLowerCase() === config.relayFixedHost) {
-        const target = headStr.match(/^[A-Z]+\s+(\S+)/)?.[1];
-        if (target) {
-          const u = new URL(target, `http://${hostNoPort}`);
-          const code = (
-            u.searchParams.get("pin") || u.pathname.match(/\/j\/([^/]+)/)?.[1] || ""
-          ).toUpperCase();
-          if (code) tunnel = tunnels.get(code);
-        }
+        const live = [...tunnels.values()].filter(
+          (t) => t.control.readyState === WebSocket.OPEN,
+        );
+        if (live.length === 1) tunnel = live[0];
+        // 0 or 2+ live hosts -> leave undefined -> 404 below (never cross-wire).
       }
       if (!tunnel) {
         sock.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
